@@ -1,0 +1,3 @@
+{"name":"ocean-babylon","private":true,"type":"module","scripts":{"dev":"vite","build":"tsc --noEmit && vite build","preview":"vite preview --port 4174"},
+"dependencies":{"@babylonjs/core":"^8.0.0","@babylonjs/materials":"^8.0.0"},
+"devDependencies":{"vite":"^7.1.0","typescript":"^5.9.0","tailwindcss":"^4.1.0","@tailwindcss/vite":"^4.1.0"}}

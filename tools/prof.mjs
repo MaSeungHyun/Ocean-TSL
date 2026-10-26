@@ -1,0 +1,11 @@
+import { chromium } from 'playwright-core'
+const b = await chromium.launch({ executablePath: '/usr/bin/google-chrome', args: ['--use-angle=swiftshader','--enable-unsafe-swiftshader'] })
+const p = await b.newPage({ viewport: { width: 1280, height: 720 } })
+await p.goto(process.argv[2]); await p.waitForTimeout(6000)
+const c = await p.context().newCDPSession(p)
+await c.send('Profiler.enable'); await c.send('Profiler.start'); await p.waitForTimeout(4000)
+const { profile } = await c.send('Profiler.stop')
+const self = {}; const dt = profile.timeDeltas; const idx = Object.fromEntries(profile.nodes.map(n=>[n.id,n]))
+profile.samples.forEach((s,i)=>{ const n=idx[s]; const k=n.callFrame.functionName+' '+n.callFrame.url.split('/').pop()+':'+n.callFrame.lineNumber; self[k]=(self[k]||0)+(dt[i]||0) })
+console.log(Object.entries(self).sort((a,b)=>b[1]-a[1]).slice(0,12).map(([k,v])=>(v/1000).toFixed(0)+'ms '+k).join('\n'))
+await b.close()
