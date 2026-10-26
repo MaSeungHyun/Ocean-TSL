@@ -65,10 +65,10 @@ export const common = `
 uniform float uTime; uniform vec3 uSun; uniform vec3 uSunColor; uniform float uSunI;
 uniform vec3 uZenith; uniform vec3 uHorizon; uniform float uClouds;
 float hash(vec3 p){ p=fract(p*0.3183099+.1); p*=17.0; return fract(p.x*p.y*p.z*(p.x+p.y+p.z)); }
-float vnoise(vec3 x){ vec3 i=floor(x); vec3 f=fract(x); f=f*f*(3.0-2.0*f);
+float vnoise(vec3 x){ vec3 i=floor(x); vec3 f=fract(x); f=f*f*f*(f*(f*6.0-15.0)+10.0);
  return mix(mix(mix(hash(i),hash(i+vec3(1,0,0)),f.x),mix(hash(i+vec3(0,1,0)),hash(i+vec3(1,1,0)),f.x),f.y),
             mix(mix(hash(i+vec3(0,0,1)),hash(i+vec3(1,0,1)),f.x),mix(hash(i+vec3(0,1,1)),hash(i+vec3(1,1,1)),f.x),f.y),f.z); }
-float fbm(vec3 p,int o){ float a=0.5,s=0.0; for(int i=0;i<6;i++){ if(i>=o) break; s+=a*vnoise(p); p*=2.03; a*=0.5;} return s; }
+float fbm(vec3 p,int o){ float a=0.5,s=0.0; for(int i=0;i<6;i++){ if(i>=o) break; s+=a*vnoise(p); p=vec3(0.8*p.x-0.6*p.y, 0.6*p.x+0.8*p.y, p.z)*2.03+vec3(1.7,9.2,0.0); a*=0.5;} return s; }
 vec2 rot2(vec2 v, float a){ float c=cos(a), s=sin(a); return vec2(c*v.x-s*v.y, s*v.x+c*v.y); }
 // 대규모 저주파 변조 (수백 m 스케일) → 진폭/거품 불균일
 float bigMod(vec2 xz){ return fbm(vec3(xz*0.0016, uTime*0.004), 3); }
@@ -106,6 +106,9 @@ float ampMod(vec2 xz){ return 0.3 + 1.4*clamp(${NOISE}(vec3(xz*0.0011, ${TIME}*0
 // 블렌딩 가중치: 타일 크기의 수 배 스케일 노이즈 → 타일 경계와 정렬되지 않음
 float bombW(vec2 xz, float L, float seed){ return smoothstep(0.25, 0.75, ${NOISE}(vec3(xz/(L*2.37), seed))); }
 vec2 cuv(vec2 xz, float L, float a, vec2 off){ return rotS(xz, -a)/L + off; }
+uniform float uSharp;
+// 지역별 뾰족함 (0~1): 일부 해역은 뾰족한 마루, 다른 곳은 둥근 너울
+float peakMod(vec2 xz){ return smoothstep(0.32, 0.72, ${NOISE}(vec3(xz*0.0008 + 17.0, ${TIME}*0.0025))*0.7 + ${NOISE}(vec3(xz*0.0029 + 3.1, ${TIME}*0.005))*0.3); }
 `
 // 해안 거리장 + 해안 파도 (스워시)
 const shoreLib = (NOISE: string) => `
@@ -114,7 +117,11 @@ uniform sampler2D uShore; uniform vec3 uShoreRect; uniform float uShoreA; unifor
 vec4 shoreInfo(vec2 xz){
   vec2 uv = (xz - uShoreRect.xy)/uShoreRect.z;
   if (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) return vec4(-1000.0, 1000.0, 0.0, 0.0);
-  return textureLod(uShore, uv, 0.0);
+  // 수동 바이리니어: float 텍스처 선형 필터 미지원(NEAREST 폴백) 시 2m 텍셀 계단/격자 방지
+  vec2 st = uv*512.0 - 0.5; vec2 i0 = floor(st), fr = st - i0; fr = fr*fr*(3.0 - 2.0*fr);
+  vec2 t0 = (i0 + 0.5)/512.0, dt = vec2(1.0/512.0, 0.0);
+  vec4 a = textureLod(uShore, t0, 0.0), b = textureLod(uShore, t0 + dt.xy, 0.0), c = textureLod(uShore, t0 + dt.yx, 0.0), e = textureLod(uShore, t0 + dt.xx, 0.0);
+  return mix(mix(a, b, fr.x), mix(c, e, fr.x), fr.y);
 }
 float waterDepth(float h){ return clamp(-h, 0.0, uDepth); }
 // 반환: (높이, 거리방향 미분 dh/dd, 앞머리 거품, 잔류 거품)
@@ -139,7 +146,7 @@ export const oceanVSBody = oceanUniforms + `
 uniform vec2 uOffset; uniform float uG; uniform vec3 uCamV; uniform float uTimeV;
 varying vec2 vXZ; varying vec3 vW; varying float vH;
 float hashv(vec3 p){ p=fract(p*0.3183099+.1); p*=17.0; return fract(p.x*p.y*p.z*(p.x+p.y+p.z)); }
-float vn(vec3 x){ vec3 i=floor(x); vec3 f=fract(x); f=f*f*(3.0-2.0*f);
+float vn(vec3 x){ vec3 i=floor(x); vec3 f=fract(x); f=f*f*f*(f*(f*6.0-15.0)+10.0);
  return mix(mix(mix(hashv(i),hashv(i+vec3(1,0,0)),f.x),mix(hashv(i+vec3(0,1,0)),hashv(i+vec3(1,1,0)),f.x),f.y),
             mix(mix(hashv(i+vec3(0,0,1)),hashv(i+vec3(1,0,1)),f.x),mix(hashv(i+vec3(0,1,1)),hashv(i+vec3(1,1,1)),f.x),f.y),f.z); }
 ${sampling('vn', 'uTimeV')}
@@ -164,8 +171,16 @@ vec3 oceanDisplace(vec3 local){
   // 수심 기반 감쇠: 얕을수록 FFT 파(특히 중/소 캐스케이드)를 줄임
   float att0 = 0.12 + 0.88*smoothstep(0.5, 18.0, wd), att1 = smoothstep(0.4, 9.0, wd);
   float lod0 = max(0.0, log2(spacing*uTexN/uL.x) + 0.5);
-  vec3 d = casc(uDisp0, xz, uL.x, uRot.x, uOff01.xy, lod0)*mix(1.0, m, 0.6)*att0
-         + cascB(uDisp1, xz, uL.y, uRot.y, uOff01.zw, spacing, 1.3)*m*att1
+  float w0 = mix(1.0, m, 0.6)*att0, w1 = m*att1;
+  vec3 c01 = casc(uDisp0, xz, uL.x, uRot.x, uOff01.xy, lod0)*w0 + cascB(uDisp1, xz, uL.y, uRot.y, uOff01.zw, spacing, 1.3)*w1;
+  // 뾰족함: 대/중 캐스케이드 수평 변위를 지역별로 키우되, 야코비안이 0.05 아래로 접히지 않게 제한
+  float lod1 = max(0.0, log2(spacing*uTexN/uL.y) + 0.5);
+  vec4 j0 = textureLod(uDer0, cuv(xz, uL.x, uRot.x, uOff01.xy), lod0), j1 = textureLod(uDer1, cuv(xz, uL.y, uRot.y, uOff01.zw), lod1);
+  float jm = min(j0.z, j0.w)*w0 + min(j1.z, j1.w)*w1;
+  float sh = 1.0 + uSharp*1.2*peakMod(xz);
+  if (jm < 0.0) sh = min(sh, max(0.95/(-jm), 0.7));
+  c01.xz *= sh;
+  vec3 d = c01
          + cascB(uDisp2, xz, uL.z, uRot.z, uOff2, spacing, 4.7)*m*att1*(1.0-smoothstep(150.0, 600.0, hd));
   d *= 1.0 - smoothstep(9000.0, 24000.0, r);
   d.y += swash(xz, si.y, uTimeV).x;
@@ -202,7 +217,7 @@ vec2 shoreDetail(vec2 xz, vec2 dir, float t){
 `
 export const oceanFS = head + common + oceanUniforms + sampling('vnoise', 'uTime') + shoreLib('vnoise') + foamLib + `
 uniform vec3 uCam;
-uniform vec3 uDeep; uniform vec3 uShallow; uniform float uTurb; uniform float uClarity; uniform float uShoreFoam; uniform vec3 uFoamCol;
+uniform vec3 uDeep; uniform vec3 uShallow; uniform float uTurb; uniform float uClarity; uniform float uShoreFoam; uniform vec3 uFoamCol; uniform float uCollFoam;
 varying vec2 vXZ; varying vec3 vW; varying float vH;
 // 기울기(xy) + 야코비안 대각(zw) + 거품 — 텍스처 바밍 버전
 vec4 derB(sampler2D t, sampler2D f, float L, float a, vec2 off, float seed, out float foam){
@@ -221,7 +236,9 @@ float caustTile(vec2 uv, float t){
   c /= 4.0; c = 1.17 - pow(c, 1.4); return pow(abs(c), 8.0);
 }
 float caustics(vec2 xz, float t){
-  return caustTile(xz/7.3, t*0.35)*0.6 + caustTile(rotS(xz, 1.1)/4.1 + 0.3, t*0.45)*0.4;
+  // 축 정렬 방지: 각 층 회전 + 저주파 도메인 워프
+  vec2 w = xz + (vec2(vnoise(vec3(xz*0.09, t*0.05)), vnoise(vec3(xz*0.09 + 7.3, t*0.05))) - 0.5)*5.0;
+  return caustTile(rotS(w, 0.47)/7.3, t*0.35)*0.6 + caustTile(rotS(w, 1.63)/4.1 + 0.3, t*0.45)*0.4;
 }
 // 절차적 디테일 노멀: 방향이 노이즈로 변하는 미세 리플 (FFT 타일과 무관한 비주기 성분)
 vec2 detailSlope(vec2 xz, float t){
@@ -246,8 +263,14 @@ void main(){
   vec2 sdir = dot(si.zw, si.zw) > 0.0 ? normalize(si.zw) : vec2(1.0, 0.0);
   slope += shoreDetail(vXZ, sdir, uTime)*(1.0 - att1)*(1.0-smoothstep(40.0, 300.0, dist));
   slope += -sdir*sw.y;
-  float jx = 1.0 + d0.z*w0 + d1.z*w1 + d2.z*w2, jz = 1.0 + d0.w*w0 + d1.w*w1 + d2.w*w2;
-  slope /= vec2(max(jx, 0.25), max(jz, 0.25));
+  float pk = peakMod(vXZ);
+  float jm = min(d0.z, d0.w)*w0 + min(d1.z, d1.w)*w1;
+  float sh = 1.0 + uSharp*1.2*pk; if (jm < 0.0) sh = min(sh, max(0.95/(-jm), 0.7));
+  float jx = 1.0 + (d0.z*w0 + d1.z*w1)*sh + d2.z*w2, jz = 1.0 + (d0.w*w0 + d1.w*w1)*sh + d2.w*w2;
+  float Jc = jx*jz;   // 전 캐스케이드 합성 야코비안 (수렴/접힘)
+  float crest0 = clamp(vH/(uHs*0.5)*0.5+0.5, 0.0, 1.0);
+  slope *= 1.0 + uSharp*pk*0.7*smoothstep(0.5, 0.95, crest0);   // 마루 노멀 강조
+  slope /= vec2(max(jx, mix(0.25, 0.08, uSharp)), max(jz, mix(0.25, 0.08, uSharp)));
   vec3 N = normalize(vec3(-slope.x, 1.0, -slope.y));
   // 스펙큘러 안티에일리어싱: 노멀의 화면공간 변화량과 거리로 거칠기 확대 (Toksvig 근사) + 지역별 거칠기 변조
   vec3 dN = fwidth(N);
@@ -298,7 +321,11 @@ void main(){
   vec3 water = bedCol*trans + inscat*(1.0 - trans);
   vec3 col = mix(water, refl, F) + spec;
   // 거품: FFT 화이트캡 + 해안선 띠 + 스워시 앞머리 + 잔류 거품, 비타일링 레이스 패턴으로 커버리지 결정
-  float foamA = clamp(f0*0.8 + f1*0.6 + f2*0.2, 0.0, 1.0)*smoothstep(0.35, 1.2, m)*att1;
+  // 외해 거품: 누적 화이트캡 + 합성 야코비안 수렴(물살 충돌) + 가파른 마루, 지역 노이즈로 변조
+  float reg = mix(0.35, 1.0, smoothstep(0.35, 1.2, m))*(0.6 + 0.4*pk);
+  float coll = smoothstep(0.8, 0.1, Jc);
+  float steepF = smoothstep(0.3, 0.85, length(slope))*smoothstep(0.55, 0.92, crest0)*(0.3 + 0.7*pk);
+  float foamA = clamp(clamp(f0*0.8 + f1*0.6 + f2*0.2, 0.0, 1.0)*(0.7 + 0.5*uCollFoam) + uCollFoam*(coll*0.7 + steepF*0.5), 0.0, 1.0)*reg*att1;
   float d = si.y;
   float band = smoothstep(-1.5, 0.5, d)*smoothstep(5.0, 0.5, d);
   float shoreMask = uShoreFoam*(band*0.75 + sw.z*0.9 + sw.w*0.55);

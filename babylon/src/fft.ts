@@ -34,6 +34,8 @@ export class FFTOcean {
     t.anisotropicFilteringLevel = aniso
     return { w, t }
   }
+  foamThr = 0.7; foamDecay = 0.37
+  setFoam(collFoam: number, persist: number) { this.foamThr = 0.45 + 0.25 * collFoam; this.foamDecay = 0.55 / Math.max(persist, 0.1) }
   setParams(p: OceanParams) {
     const s = buildSpectra(this.N, p); this.hs = s.hs; this.lambda = p.choppy * 1.25
     s.data.forEach((d, c) => this.h0[c].update(d))
@@ -61,7 +63,7 @@ export class FFTOcean {
       this.ifft(this.A[c]); this.ifft(this.B[c])
       this.run(this.dsp, this.disp[c][cur], (e) => {
         e.setTexture('uA', this.A[c].t); e.setTexture('uB', this.B[c].t); e.setTexture('uPrev', this.disp[c][1 - cur].t)
-        e.setFloat('uLambda', this.lambda); e.setFloat('uDt', dt); e.setFloat('uFoamDecay', 0.55); e.setFloat('uFoamThr', 0.45) })
+        e.setFloat('uLambda', this.lambda); e.setFloat('uDt', dt); e.setFloat('uFoamDecay', this.foamDecay); e.setFloat('uFoamThr', this.foamThr) })
       this.engine.generateMipmaps(this.disp[c][cur].w.texture!)
       this.run(this.der, this.deriv[c], (e) => { e.setTexture('uA', this.A[c].t); e.setTexture('uB', this.B[c].t); e.setFloat('uLambda', this.lambda) })
       this.engine.generateMipmaps(this.deriv[c].w.texture!)

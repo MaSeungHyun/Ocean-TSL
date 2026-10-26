@@ -125,5 +125,5 @@ export function bakeShore(N = 512, size = 1000) {
   }
   return { data: out, N, rect: [minX, minZ, size] as [number, number, number] }
 }
-export interface ShoreLook { shoreFoam: number; shoreWave: number; shoreLen: number; foamColor: string; foamBright: number }
-export const SHORE_DEFAULT: ShoreLook = { shoreFoam: 1, shoreWave: 0.6, shoreLen: 16, foamColor: '#f2f7f7', foamBright: 1 }
+export interface ShoreLook { shoreFoam: number; shoreWave: number; shoreLen: number; foamColor: string; foamBright: number; sharp: number; collFoam: number; persist: number }
+export const SHORE_DEFAULT: ShoreLook = { shoreFoam: 1, shoreWave: 0.6, shoreLen: 16, foamColor: '#f2f7f7', foamBright: 1, sharp: 0.6, collFoam: 1, persist: 1.5 }

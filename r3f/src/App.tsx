@@ -10,7 +10,7 @@ type Quality = 'low' | 'medium' | 'high'
 // N: FFT 해상도, rings: 방사형 그리드 링 수 (정점 밀도)
 const Q: Record<Quality, { N: number; rings: number }> = { low: { N: 256, rings: 420 }, medium: { N: 256, rings: 640 }, high: { N: 512, rings: 900 } }
 const qs = new URLSearchParams(location.search)
-const CAMS = { low: { pos: [0, 2.2, 0], target: [-40, 1.2, -120] }, high: { pos: [140, 160, 260], target: [-120, 0, -420] } } as const
+const CAMS = { low: { pos: [0, 2.2, 0], target: [-40, 1.2, -120] }, high: { pos: [140, 160, 260], target: [-120, 0, -420] }, shore: { pos: [-225, 7, -525], target: [-262, 0, -612] }, top: { pos: [-262, 22, -548], target: [-262, 0, -556] } } as const
 const ISLAND = new THREE.Vector3(-260, -720, 150)
 // 해안 거리장 (한 번만 베이크)
 const SHORE = bakeShore(512, 1000)
@@ -68,7 +68,7 @@ function Scene({ params, look, shore, quality, fps }: { params: OceanParams; loo
       uIsland: { value: ISLAND }, uHs: { value: 1 }, uTexN: { value: q.N },
       uDeep: { value: new THREE.Color() }, uShallow: { value: new THREE.Color() }, uTurb: { value: 0 }, uClarity: { value: 20 }, uDepth: { value: 10 },
       uShore: { value: shoreTex }, uShoreRect: { value: new THREE.Vector3(...SHORE.rect) }, uShoreA: { value: 0.6 }, uShoreLen: { value: 16 },
-      uShoreFoam: { value: 1 }, uFoamCol: { value: new THREE.Color(1, 1, 1) } },
+      uShoreFoam: { value: 1 }, uSharp: { value: 0.6 }, uCollFoam: { value: 1 }, uFoamCol: { value: new THREE.Color(1, 1, 1) } },
     vertexShader: `precision highp float;\n${oceanVSBody}\nvoid main(){ vec3 w = oceanDisplace(position); gl_Position = projectionMatrix * viewMatrix * vec4(w, 1.0); }`,
     fragmentShader: toneOut(oceanFS), side: THREE.DoubleSide, transparent: true,
   }), [grid.g, q.N])
@@ -105,8 +105,9 @@ void main(){ vec4 w = modelMatrix*vec4(position,1.0); vWp = w.xyz; vN = normaliz
   useEffect(() => {
     const u = ocean.uniforms
     u.uShoreA.value = island.uniforms.uShoreA.value = shore.shoreWave; u.uShoreLen.value = shore.shoreLen; u.uShoreFoam.value = shore.shoreFoam
+    u.uSharp.value = shore.sharp; u.uCollFoam.value = shore.collFoam; sim.setFoam(shore.collFoam, shore.persist)
     u.uFoamCol.value.set(shore.foamColor).multiplyScalar(shore.foamBright)
-  }, [ocean, island, shore])
+  }, [ocean, island, sim, shore])
   useFrame((_, rdt) => {
     const dt = Math.min(rdt, 0.1), a = acc.current; a.time += dt
     const cur = sim.update(gl, a.time, dt)
@@ -136,7 +137,7 @@ function Slider(p: { label: string; min: number; max: number; step: number; valu
 }
 
 export default function App() {
-  const [params, setParams] = useState<OceanParams>({ wind: +(qs.get('wind') ?? 9), peak: +(qs.get('peak') ?? 60), choppy: 0.75, windDir: -1.9, hour: +(qs.get('hour') ?? 15.5), clouds: +(qs.get('clouds') ?? 0.3) })
+  const [params, setParams] = useState<OceanParams>({ wind: +(qs.get('wind') ?? 9), peak: +(qs.get('peak') ?? 60), choppy: 1.3, windDir: -1.9, hour: +(qs.get('hour') ?? 15.5), clouds: +(qs.get('clouds') ?? 0.3) })
   const [quality, setQuality] = useState<Quality>((qs.get('q') as Quality) ?? 'high')
   const [dpr, setDpr] = useState(+(qs.get('dpr') ?? Math.min(window.devicePixelRatio, 2)))
   const [look, setLook] = useState<WaterLook>(WATER_PRESETS['열대 맑은 물'])
@@ -166,7 +167,7 @@ export default function App() {
       <div className="text-sm font-semibold">Ocean · R3F + FFT</div>
       <Slider label="풍속 Wind" min={1} max={25} step={0.5} value={params.wind} unit=" m/s" onChange={set('wind')} />
       <Slider label="피크 파장 Peak λ" min={8} max={200} step={1} value={params.peak} unit=" m" onChange={set('peak')} />
-      <Slider label="파도 뾰족함 Choppy" min={0} max={1} step={0.05} value={params.choppy} onChange={set('choppy')} />
+      <Slider label="초퍼니스 Choppy" min={0} max={2} step={0.05} value={params.choppy} onChange={set('choppy')} />
       <Slider label="풍향 Wind dir" min={-3.14} max={3.14} step={0.01} value={params.windDir} onChange={set('windDir')} />
       <Slider label="시간 Time of day" min={5.5} max={18.5} step={0.1} value={params.hour} unit=" h" onChange={set('hour')} />
       <Slider label="구름 Cloud coverage" min={0} max={1} step={0.05} value={params.clouds} onChange={set('clouds')} />
@@ -188,6 +189,10 @@ export default function App() {
         <label className="flex flex-1 items-center justify-between">거품 색 <input type="color" value={shore.foamColor} onChange={(e) => setS('foamColor')(e.target.value)} className="h-6 w-10 bg-transparent" /></label>
       </div>
       <Slider label="거품 밝기 Foam brightness" min={0.3} max={2} step={0.05} value={shore.foamBright} onChange={setS('foamBright')} />
+      <div className="border-t border-white/10 pt-2 text-[11px] font-semibold text-slate-200">외해 파도 · 거품</div>
+      <Slider label="파도 뾰족함 Crest sharpness" min={0} max={1} step={0.05} value={shore.sharp} onChange={setS('sharp')} />
+      <Slider label="물살 거품 양 Collision foam" min={0} max={2} step={0.05} value={shore.collFoam} onChange={setS('collFoam')} />
+      <Slider label="거품 지속 시간 Foam persistence" min={0.3} max={4} step={0.1} value={shore.persist} unit="x" onChange={setS('persist')} />
       <Slider label="픽셀 비율 Pixel ratio" min={0.5} max={2} step={0.25} value={dpr} onChange={setDpr} />
       <div className="flex gap-1 text-xs">{(['low', 'medium', 'high'] as Quality[]).map((k) =>
         <button key={k} onClick={() => setQuality(k)} className={`flex-1 rounded px-2 py-1 ${quality === k ? 'bg-sky-500' : 'bg-white/10 hover:bg-white/20'}`}>{k}</button>)}</div>

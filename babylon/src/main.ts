@@ -15,7 +15,7 @@ type Quality = 'low' | 'medium' | 'high'
 // N: FFT 해상도, rings: 방사형 그리드 링 수
 const Q: Record<Quality, { N: number; rings: number }> = { low: { N: 256, rings: 420 }, medium: { N: 256, rings: 640 }, high: { N: 512, rings: 900 } }
 const qs = new URLSearchParams(location.search)
-const CAMS = { low: { pos: [0, 2.2, 0], target: [-40, 1.2, -120] }, high: { pos: [140, 160, 260], target: [-120, 0, -420] } } as const
+const CAMS = { low: { pos: [0, 2.2, 0], target: [-40, 1.2, -120] }, high: { pos: [140, 160, 260], target: [-120, 0, -420] }, shore: { pos: [-225, 7, -525], target: [-262, 0, -612] }, top: { pos: [-262, 22, -548], target: [-262, 0, -556] } } as const
 
 const canvas = document.getElementById('c') as HTMLCanvasElement
 const engine = new Engine(canvas, true, { stencil: true, antialias: true, powerPreference: 'high-performance' })
@@ -29,7 +29,7 @@ cam.attachControl(canvas, true)
 const goCam = (k: keyof typeof CAMS) => { cam.setTarget(new Vector3(...CAMS[k].target)); cam.setPosition(new Vector3(...CAMS[k].pos)) }
 goCam((qs.get('cam') as keyof typeof CAMS) ?? 'low')
 
-const params: OceanParams = { wind: +(qs.get('wind') ?? 9), peak: +(qs.get('peak') ?? 60), choppy: 0.75, windDir: -1.9, hour: +(qs.get('hour') ?? 15.5), clouds: +(qs.get('clouds') ?? 0.3) }
+const params: OceanParams = { wind: +(qs.get('wind') ?? 9), peak: +(qs.get('peak') ?? 60), choppy: 1.3, windDir: -1.9, hour: +(qs.get('hour') ?? 15.5), clouds: +(qs.get('clouds') ?? 0.3) }
 let quality: Quality = (qs.get('q') as Quality) ?? 'high'
 const island = new Vector3(-260, -720, 150)
 
@@ -91,7 +91,7 @@ function buildOcean() {
   Effect.ShadersStore['oceanVertexShader'] = oceanVS
   Effect.ShadersStore['oceanFragmentShader'] = oceanFS
   const mat = new ShaderMaterial(`ocean_${quality}`, scene, 'ocean', { attributes: ['position'],
-    uniforms: [...skyUniforms, 'uTimeV', 'uCamV', 'uOffset', 'uG', 'uL', 'uRot', 'uOff01', 'uOff2', 'uIsland', 'uHs', 'uTexN', 'uDeep', 'uShallow', 'uTurb', 'uClarity', 'uDepth', 'uShoreRect', 'uShoreA', 'uShoreLen', 'uShoreFoam', 'uFoamCol'],
+    uniforms: [...skyUniforms, 'uTimeV', 'uCamV', 'uOffset', 'uG', 'uL', 'uRot', 'uOff01', 'uOff2', 'uIsland', 'uHs', 'uTexN', 'uDeep', 'uShallow', 'uTurb', 'uClarity', 'uDepth', 'uShoreRect', 'uShoreA', 'uShoreLen', 'uShoreFoam', 'uFoamCol', 'uSharp', 'uCollFoam'],
     samplers: ['uShore', 'uDisp0', 'uDisp1', 'uDisp2', 'uDer0', 'uDer1', 'uDer2'] })
   mat.backFaceCulling = false
   mat.needAlphaBlending = () => true
@@ -113,7 +113,7 @@ const shore: ShoreLook = { ...SHORE_DEFAULT }
 function applyShore() {
   if (!ocean) return
   const mt = ocean.mat
-  mt.setFloat('uShoreA', shore.shoreWave); islandMat.setFloat('uShoreA', shore.shoreWave); mt.setFloat('uShoreLen', shore.shoreLen); mt.setFloat('uShoreFoam', shore.shoreFoam)
+  mt.setFloat('uShoreA', shore.shoreWave); islandMat.setFloat('uShoreA', shore.shoreWave); mt.setFloat('uShoreLen', shore.shoreLen); mt.setFloat('uShoreFoam', shore.shoreFoam); mt.setFloat('uSharp', shore.sharp); mt.setFloat('uCollFoam', shore.collFoam); ocean.sim.setFoam(shore.collFoam, shore.persist)
   mt.setColor3('uFoamCol', Color3.FromHexString(shore.foamColor).toLinearSpace().scale(shore.foamBright))
 }
 let specTimer = 0
@@ -174,7 +174,7 @@ function slider(label: string, min: number, max: number, step: number, get: () =
 const P = (k: keyof OceanParams) => [() => params[k], (v: number) => { params[k] = v; if (k === 'hour' || k === 'clouds') applySky(); else applySpectrum() }] as const
 slider('풍속 Wind', 1, 25, 0.5, ...P('wind'), ' m/s')
 slider('피크 파장 Peak λ', 8, 200, 1, ...P('peak'), ' m')
-slider('파도 뾰족함 Choppy', 0, 1, 0.05, ...P('choppy'))
+slider('초퍼니스 Choppy', 0, 2, 0.05, ...P('choppy'))
 slider('풍향 Wind dir', -3.14, 3.14, 0.01, ...P('windDir'))
 slider('시간 Time of day', 5.5, 18.5, 0.1, ...P('hour'), ' h')
 slider('구름 Cloud coverage', 0, 1, 0.05, ...P('clouds'))
@@ -209,6 +209,10 @@ slider('해안 파장 Shore wavelength', 6, 40, 1, () => shore.shoreLen, (v) => 
   l.innerHTML = '거품 색 <input type="color" class="h-6 w-10 bg-transparent">'; const inp = l.querySelector('input')!
   inp.value = shore.foamColor; inp.oninput = () => { shore.foamColor = inp.value; applyShore() }; panel.appendChild(l) }
 slider('거품 밝기 Foam brightness', 0.3, 2, 0.05, () => shore.foamBright, (v) => { shore.foamBright = v; applyShore() })
+{ const h = document.createElement('div'); h.className = 'border-t border-white/10 pt-2 text-[11px] font-semibold text-slate-200'; h.textContent = '외해 파도 · 거품'; panel.appendChild(h) }
+slider('파도 뾰족함 Crest sharpness', 0, 1, 0.05, () => shore.sharp, (v) => { shore.sharp = v; applyShore() })
+slider('물살 거품 양 Collision foam', 0, 2, 0.05, () => shore.collFoam, (v) => { shore.collFoam = v; applyShore() })
+slider('거품 지속 시간 Foam persistence', 0.3, 4, 0.1, () => shore.persist, (v) => { shore.persist = v; applyShore() }, 'x')
 slider('픽셀 비율 Pixel ratio', 0.5, 2, 0.25, () => dpr, (v) => { dpr = v; engine.setHardwareScalingLevel(1 / v) })
 const row = (html: string) => { const d = document.createElement('div'); d.className = 'flex gap-1 text-xs'; d.innerHTML = html; panel.appendChild(d); return d }
 const qrow = row((['low', 'medium', 'high'] as Quality[]).map((k) => `<button data-q="${k}" class="flex-1 rounded px-2 py-1">${k}</button>`).join(''))

@@ -23,6 +23,7 @@ const outRT = (N: number, aniso: number) => {
 
 export class FFTOcean {
   N: number; hs = 1
+  setFoam(collFoam: number, persist: number) { const u = this.dsp.m.uniforms; u.uFoamThr.value = 0.45 + 0.25 * collFoam; u.uFoamDecay.value = 0.55 / Math.max(persist, 0.1) }
   private cam = new THREE.Camera()
   private h0: THREE.DataTexture[] = []
   private ping: THREE.WebGLRenderTarget[] = []
