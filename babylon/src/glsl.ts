@@ -72,6 +72,37 @@ float fbm(vec3 p,int o){ float a=0.5,s=0.0; for(int i=0;i<6;i++){ if(i>=o) break
 vec2 rot2(vec2 v, float a){ float c=cos(a), s=sin(a); return vec2(c*v.x-s*v.y, s*v.x+c*v.y); }
 // 대규모 저주파 변조 (수백 m 스케일) → 진폭/거품 불균일
 float bigMod(vec2 xz){ return fbm(vec3(xz*0.0016, uTime*0.004), 3); }
+// ---- 수중 (카메라가 실제 파면 아래일 때 uUnder → 1) ----
+uniform float uUnderG; uniform vec3 uUWCol; uniform float uUWDens; uniform float uCamDepth;
+// 채널별 소광계수 (Beer-Lambert): 지정 색이 가장 멀리 투과되도록 -log(색) 기반, 밀도로 스케일
+// 픽셀 단위 수면 분할: uWL = 근평면 가로 스트립의 실제 파고(R), 이 픽셀의 근평면 점 높이와 비교
+uniform float uSplit; uniform sampler2D uWL; uniform vec2 uRes; uniform vec3 uCamF; uniform float uNear;
+float uUnder; float uMen;
+void uwInit(vec3 wp, vec3 cam){
+  uUnder = uUnderG; uMen = 0.0;
+  if (uSplit > 0.001){
+    vec3 d = normalize(wp - cam); vec3 np = cam + d*(uNear/max(dot(d, uCamF), 0.05));
+    float h = texture2D(uWL, vec2(gl_FragCoord.x/uRes.x, 0.5)).r;
+    float e = h - np.y + 0.0015*sin(gl_FragCoord.x*0.045 + uTime*3.0);
+    uUnder = mix(uUnderG, smoothstep(-0.0015, 0.0015, e), uSplit);
+    uMen = uSplit*(1.0 - smoothstep(0.0, 0.006, abs(e - 0.0015)));
+  }
+}
+vec3 meniscus(vec3 c){ return mix(c, c*0.35 + uUWCol*0.08, uMen*0.8); }
+vec3 uwExt(){ return uUWDens*(0.25 - log(clamp(uUWCol*1.6, 0.03, 0.97))); }
+// 수중 산란광 (시선 방향 dir: 카메라→바깥): 위쪽 밝고 아래 어두움 + 수면 아래 갓레이
+vec3 uwMedium(vec3 dir){
+  vec3 sunC = uSunColor*uSunI;
+  vec3 light = (sunC*max(uSun.y, 0.05)*0.55 + uZenith*0.4 + uHorizon*0.15)*exp(-uwExt()*max(uCamDepth, 0.0)*0.6);
+  vec3 c = uUWCol*light*mix(0.25, 1.25, smoothstep(-0.9, 0.8, dir.y));
+  vec3 sd = normalize(vec3(uSun.x, max(uSun.y, 0.1)*1.333 + 0.3, uSun.z));   // 굴절된 태양 방향 (대략)
+  float cs = max(dot(dir, sd), 0.0);
+  vec2 q = dir.xz/(abs(dir.y) + 0.25);
+  float rays = vnoise(vec3(q*vec2(3.0, 9.0), uTime*0.25))*vnoise(vec3(q*vec2(7.0, 2.5) + 4.0, uTime*0.35));
+  c += uUWCol*sunC*(pow(cs, 6.0)*0.35 + pow(cs, 3.0)*rays*0.9)*smoothstep(-0.2, 0.5, dir.y);
+  return c;
+}
+vec3 underFog(vec3 col, float dist, vec3 dir){ vec3 T = exp(-uwExt()*dist); return col*T + uwMedium(dir)*(1.0 - T); }
 vec3 sky(vec3 d, int oct, float disk){
   float y=max(d.y,0.0);
   vec3 col=mix(uHorizon,uZenith,pow(y,0.5));
@@ -90,7 +121,7 @@ vec3 sky(vec3 d, int oct, float disk){
 }`
 
 export const skyFS = head + common + `
-uniform vec3 uCam; varying vec3 vW; void main(){ gl_FragColor=vec4(sky(normalize(vW-uCam),5,1.0),1.0); }`
+uniform vec3 uCam; varying vec3 vW; void main(){ uwInit(vW, uCam); vec3 d = normalize(vW-uCam); vec3 c = uUnder > 0.001 ? mix(sky(d,5,1.0), uwMedium(d), uUnder) : sky(d,5,1.0); gl_FragColor=vec4(meniscus(c),1.0); }`
 
 // ---------- 바다 표면 ----------
 const oceanUniforms = `
@@ -124,22 +155,54 @@ vec4 shoreInfo(vec2 xz){
   return mix(mix(a, b, fr.x), mix(c, e, fr.x), fr.y);
 }
 float waterDepth(float h){ return clamp(-h, 0.0, uDepth); }
-// 반환: (높이, 거리방향 미분 dh/dd, 앞머리 거품, 잔류 거품)
-vec4 swash(vec2 xz, float d, float t){
+float hash1(float n){ return fract(sin(n*12.9898 + 4.1)*43758.5453); }
+// 해안 파: 위상이 시간에 따라 증가 → 마루가 바다(d>0)에서 해안(d=0)으로 진행
+// 반환 (x: 해안에서 사이클 진행도 s∈[0,1), y: 이번 파의 최대 처오름 R(m, 수평), z: 현재 물 앞머리 F(m), w: 처오름 비율 a)
+vec4 runup(vec2 xz, float t){
+  float k = 6.28318/uShoreLen, om = sqrt(9.81*k)*0.75;
+  float ph0 = t*om + ${NOISE}(vec3(xz*0.011, t*0.015))*7.0;           // d=0 에서의 위상 (해안선 따라 도착 시각이 다름)
+  float cyc = (ph0 - 1.5708)/6.28318, n = floor(cyc), s = cyc - n;
+  float var = 0.55 + 0.9*${NOISE}(vec3(xz*0.025, 2.0 + t*0.01));
+  float wv = mix(0.45, 1.35, hash1(n))*mix(0.7, 1.15, ${NOISE}(vec3(xz*0.06, n*1.7)));   // 파마다 / 구간마다 다른 세기
+  float R = uShoreA*var*wv*8.0 + 0.3;
+  float a = 0.32;
+  float f = s < a ? sin(s/a*1.5708) : pow(cos((s - a)/(1.0 - a)*1.5708), 1.4);
+  float F = R*f + (${NOISE}(vec3(xz*0.35, t*0.2)) - 0.5)*0.8*f;          // 앞머리 굴곡
+  return vec4(s, R, F, a);
+}
+// 반환: (높이(절대 y), 거리방향 미분 dh/dd, 앞머리 거품, 잔류/역류 거품)
+vec4 swash(vec2 xz, vec4 si, float t){
+  float d = si.y;
   if (d > 95.0 || uShoreA <= 0.0) return vec4(0.0);
   float k = 6.28318/uShoreLen;
-  float ph = d*k - t*sqrt(9.81*k)*0.75 + ${NOISE}(vec3(xz*0.011, t*0.015))*7.0;
-  float env = smoothstep(95.0, 30.0, d)*smoothstep(-7.0, 0.5, d);
+  vec4 ru = runup(xz, t);
+  float s = ru.x, R = ru.y, F = ru.z, up = 1.0 - smoothstep(ru.w - 0.05, ru.w + 0.05, s);
+  if (d < 0.0){
+    // 육지: 물막이 지형을 따라 F 까지 올라왔다(스워시) 내려감(백워시)
+    float x = -d;
+    if (x > R*1.6 + 3.0) return vec4(si.x - 0.6, 0.0, 0.0, 0.0);
+    float inside = F - x;
+    float film = inside > 0.0 ? 0.035 + mix(0.12, 0.3, up)*sqrt(clamp(inside/max(F, 0.5), 0.0, 1.0)) : -0.5 + min(inside, 0.0)*0.05;
+    float lead = smoothstep(-0.2, -1.8, x - F)*step(x, F + 0.05)*mix(0.45, 1.0, up);
+    float back = (1.0 - up)*smoothstep(0.0, 1.5, inside)*0.55;           // 빠지는 물 위의 얇은 거품 줄
+    return vec4(si.x + film, -0.08, lead, back);
+  }
+  float ph = s*6.28318 + 1.5708 + d*k;      // 바다 쪽: 같은 위상장 (d가 클수록 늦게 → 해안으로 진행)
+  float env = smoothstep(95.0, 30.0, d);
   float shoal = 1.0 + 1.6*smoothstep(30.0, 2.0, d);
   float steep = mix(1.0, 5.0, smoothstep(45.0, 2.0, d));
   float c = 0.5 + 0.5*sin(ph), p = pow(c, steep);
-  float var = 0.55 + 0.9*${NOISE}(vec3(xz*0.025, 2.0 + t*0.01));     // 해안선 방향 폭/세기 변화
+  float var = 0.55 + 0.9*${NOISE}(vec3(xz*0.025, 2.0 + t*0.01));
   float A = uShoreA*env*shoal*var*0.5;
   float dp = steep*pow(max(c, 1e-3), steep - 1.0)*0.5*cos(ph)*k;
-  float lead = smoothstep(0.8, 0.985, c)*smoothstep(28.0, 3.0, d)*var;
+  // 해안선 근처: 부서진 파고를 물막이 높이로 이어 붙임
+  float b = smoothstep(0.0, 6.0, d);
+  float film0 = F > 0.0 ? 0.035 + mix(0.12, 0.3, up) : 0.0;
+  float h = A*p*b + film0*(1.0 - b);
+  float lead = smoothstep(0.8, 0.985, c)*smoothstep(28.0, 3.0, d)*var + (1.0 - b)*up*0.5;
   float behind = fract((ph - 1.5708)/6.28318);
   float linger = exp(-behind*5.0)*smoothstep(22.0, 1.0, d)*var;
-  return vec4(A*p, A*dp, lead, linger);
+  return vec4(h, A*dp*b, lead, linger);
 }
 `
 export const oceanVSBody = oceanUniforms + `
@@ -182,8 +245,8 @@ vec3 oceanDisplace(vec3 local){
   c01.xz *= sh;
   vec3 d = c01
          + cascB(uDisp2, xz, uL.z, uRot.z, uOff2, spacing, 4.7)*m*att1*(1.0-smoothstep(150.0, 600.0, hd));
-  d *= 1.0 - smoothstep(9000.0, 24000.0, r);
-  d.y += swash(xz, si.y, uTimeV).x;
+  d *= (1.0 - smoothstep(9000.0, 24000.0, r))*smoothstep(-0.5, 3.0, si.y);   // 육지 위에서는 FFT 파 제거 (물막이만)
+  d.y += swash(xz, si, uTimeV).x;
   vXZ = xz; vH = d.y; vW = vec3(xz.x + d.x, d.y, xz.y + d.z);
   return vW;
 }`
@@ -247,11 +310,12 @@ vec2 detailSlope(vec2 xz, float t){
   return vec2(fbm(vec3(p + vec2(e, 0.0), t*0.3), 2) - c, fbm(vec3(p + vec2(0.0, e), t*0.3), 2) - c)/e*0.06;
 }
 void main(){
+  uwInit(vW, uCam);
   vec3 toCam = uCam - vW; float dist = length(toCam); vec3 V = toCam/dist;
   float m = ampMod(vXZ);
   vec4 si = shoreInfo(vXZ); float wd0 = waterDepth(si.x);
   float att0 = 0.12 + 0.88*smoothstep(0.5, 18.0, wd0), att1 = smoothstep(0.4, 9.0, wd0);
-  vec4 sw = swash(vXZ, si.y, uTime);
+  vec4 sw = swash(vXZ, si, uTime);
   vec2 uv0 = cuv(vXZ, uL.x, uRot.x, uOff01.xy);
   vec4 d0 = texture2D(uDer0, uv0); d0.xy = rotS(d0.xy, uRot.x);
   float f0 = texture2D(uDisp0, uv0).w, f1, f2;
@@ -328,7 +392,7 @@ void main(){
   float foamA = clamp(clamp(f0*0.8 + f1*0.6 + f2*0.2, 0.0, 1.0)*(0.7 + 0.5*uCollFoam) + uCollFoam*(coll*0.7 + steepF*0.5), 0.0, 1.0)*reg*att1;
   float d = si.y;
   float band = smoothstep(-1.5, 0.5, d)*smoothstep(5.0, 0.5, d);
-  float shoreMask = uShoreFoam*(band*0.75 + sw.z*0.9 + sw.w*0.55);
+  float shoreMask = uShoreFoam*(band*0.75*step(0.0, d) + sw.z*0.9 + sw.w*0.55);
   float mask = clamp(foamA + shoreMask, 0.0, 1.0);
   float pat = mix(lace(vXZ, uTime), 0.55, smoothstep(80.0, 600.0, dist));
   float foam = foamCover(mask, pat)*(1.0-smoothstep(1500.0, 6000.0, dist));
@@ -338,21 +402,65 @@ void main(){
   col = mix(col, sky(normalize(vec3(-V.x, 0.015, -V.z)), 0, 0.0), pow(fog, 1.4));
   // 물가: 수막 두께로 부드러운 알파
   float thick = vW.y - si.x;
-  gl_FragColor = vec4(col, smoothstep(0.0, 0.35, thick));
+  float alpha = smoothstep(0.0, 0.35, thick);
+  if (uUnder > 0.001){
+    // 수면을 아래에서 본 모습: 스넬의 창(굴절된 하늘) + 창 밖은 전반사(수중 색)
+    vec3 Nd = -N; vec3 I = -V;
+    vec3 Ta = refract(I, Nd, 1.333);
+    vec3 rd = reflect(I, Nd); rd.y = min(rd.y, -0.02);
+    vec3 below = uwMedium(normalize(rd));
+    vec3 uc;
+    if (dot(Ta, Ta) < 1e-4) uc = below;
+    else {
+      float c1 = abs(dot(V, N));
+      float Fw = 0.02 + 0.98*pow(1.0 - c1, 5.0);
+      Fw = max(Fw, smoothstep(0.76, 0.66, c1));     // 창 가장자리 부드럽게
+      uc = mix(sky(normalize(Ta), 3, 1.0)*0.9 + foamC*foam*0.6, below, Fw);
+    }
+    uc = underFog(uc, dist, -V);
+    col = mix(col, uc, uUnder); alpha = mix(alpha, 1.0, uUnder);
+  }
+  alpha = mix(alpha, 1.0, uMen);
+  gl_FragColor = vec4(meniscus(col), alpha);
 }`
 
 
 // ---------- 섬 지형 (젖은 모래 띠 포함) ----------
-export const islandFS = head + common + `
-uniform float uShoreA; varying vec3 vCol; varying vec3 vN; varying vec3 vWp; uniform vec3 uCam;
+export const islandFS = head + common + shoreLib('vnoise') + `
+varying vec3 vCol; varying vec3 vN; varying vec3 vWp; uniform vec3 uCam;
 void main(){
+  uwInit(vWp, uCam);
   vec3 n = normalize(vN); vec3 sunC = uSunColor*uSunI; vec3 amb = uZenith*0.5 + uHorizon*0.25;
-  float runup = uShoreA*(0.75 + 0.35*sin(uTime*0.6 + vWp.x*0.02 + vWp.z*0.015)) + 0.25;
-  float wet = 1.0 - smoothstep(runup*0.6, runup + 0.3, vWp.y);
-  vec3 alb = vCol*mix(1.0, 0.5, wet);
+  // 젖은 모래: 이번 파가 도달했던 곳은 물이 빠진 뒤 서서히 마름 + 이전 파들의 잔여 습기
+  vec4 si = shoreInfo(vWp.xz); float x = -si.y;
+  float wet = 0.0, foamL = 0.0;
+  if (uShoreA > 0.0 && x > -2.0 && x < 40.0){
+    vec4 ru = runup(vWp.xz, uTime); float s = ru.x, R = ru.y, F = ru.z, a = ru.w;
+    float P = 6.28318/(sqrt(9.81*6.28318/uShoreLen)*0.75);
+    float sd = x < R ? a + (1.0 - a)*acos(pow(clamp(x/R, 0.0, 1.0), 1.0/1.4))/1.5708 : 2.0;
+    float cur = x < F ? 1.0 : (s > sd ? exp(-(s - sd)*P/5.0) : 0.0);
+    wet = max(max(cur, 0.5*smoothstep(R*1.25 + 0.8, R*0.2, x)), 1.0 - smoothstep(-1.0, 0.5, x));
+    // 최대 도달선에 남는 얇은 거품 줄 (빠지는 동안 사라짐)
+    float edge = smoothstep(R - 0.9, R - 0.15, x)*smoothstep(R + 0.35, R, x);
+    foamL = edge*(s > a ? exp(-(s - a)*P/3.0) : 0.0)*step(F, x)*smoothstep(0.35, 0.65, fbm(vec3(vWp.xz*1.7, uTime*0.1), 2));
+  }
+  vec3 alb = vCol*mix(1.0, 0.55, wet);
   vec3 V = normalize(uCam - vWp); vec3 H = normalize(uSun + V);
   vec3 col = alb*(sunC*max(dot(n, uSun), 0.0) + amb) + sunC*wet*0.25*pow(max(dot(n, H), 0.0), 60.0);
+  col = mix(col, vec3(0.92, 0.95, 0.95)*(amb*1.6 + sunC*0.55), foamL*0.85);
   float dist = length(uCam - vWp);
   col = mix(col, sky(normalize(vec3(-V.x, 0.015, -V.z)), 0, 0.0), pow(1.0 - exp(-dist*0.000035), 1.4));
-  gl_FragColor = vec4(col, 1.0);
+  if (uUnder > 0.001) col = mix(col, underFog(col*mix(1.0, 0.6, step(vWp.y, 0.0)), dist, -V), uUnder);
+  gl_FragColor = vec4(meniscus(col), 1.0);
+}`
+
+// ---- 카메라 위치의 실제 수면 높이 (1x1 패스, 수평 변위 역보정 3회) ----
+export const probeFS = head + oceanVSBody.replace('varying vec2 vXZ; varying vec3 vW; varying float vH;', 'vec2 vXZ; vec3 vW; float vH;') + `
+uniform vec3 uNearL; uniform vec3 uNearR; uniform float uStripN;
+void main(){
+  // 텍셀 i = 근평면 가로선 위 점(카메라 기준 오프셋)의 실제 파고. 가운데 텍셀 ≈ 카메라 위치
+  vec3 o = mix(uNearL, uNearR, gl_FragCoord.x/uStripN); vec2 T = uOffset + o.xz;
+  vec3 p = vec3(o.x, 0.0, o.z); vec3 w = vec3(0.0);
+  for (int i = 0; i < 4; i++){ w = oceanDisplace(p); p.xz -= w.xz - T; }
+  gl_FragColor = vec4(w.y, 0.0, 0.0, 1.0);
 }`

@@ -1,8 +1,9 @@
 import './style.css'
 import { Engine, Scene, RawTexture, Constants, ArcRotateCamera, Vector3, Vector2, Vector4, Color3, Mesh, MeshBuilder, VertexData, ShaderMaterial,
-  StandardMaterial, HemisphericLight, DirectionalLight, DefaultRenderingPipeline, ImageProcessingConfiguration, Effect } from '@babylonjs/core'
+  StandardMaterial, HemisphericLight, DirectionalLight, DefaultRenderingPipeline, ImageProcessingConfiguration, Effect,
+  EffectRenderer, EffectWrapper, BaseTexture } from '@babylonjs/core'
 import { CASCADE_L, CASCADE_OFF, CASCADE_ROT, skyState, WATER_PRESETS, SHORE_DEFAULT, bakeShore, islandHeight, type OceanParams, type WaterLook, type ShoreLook } from './spectrum'
-import { islandFS, oceanFS, oceanVSBody, skyFS } from './glsl'
+import { islandFS, oceanFS, oceanVSBody, probeFS, skyFS } from './glsl'
 import { FFTOcean } from './fft'
 
 const skyVS = `precision highp float; attribute vec3 position; uniform mat4 world; uniform mat4 viewProjection; varying vec3 vW;
@@ -15,7 +16,10 @@ type Quality = 'low' | 'medium' | 'high'
 // N: FFT 해상도, rings: 방사형 그리드 링 수
 const Q: Record<Quality, { N: number; rings: number }> = { low: { N: 256, rings: 420 }, medium: { N: 256, rings: 640 }, high: { N: 512, rings: 900 } }
 const qs = new URLSearchParams(location.search)
-const CAMS = { low: { pos: [0, 2.2, 0], target: [-40, 1.2, -120] }, high: { pos: [140, 160, 260], target: [-120, 0, -420] }, shore: { pos: [-225, 7, -525], target: [-262, 0, -612] }, top: { pos: [-262, 22, -548], target: [-262, 0, -556] } } as const
+const CAMS = { low: { pos: [0, 2.2, 0], target: [-40, 1.2, -120] }, high: { pos: [140, 160, 260], target: [-120, 0, -420] }, shore: { pos: [-225, 7, -525], target: [-262, 0, -612] }, top: { pos: [-262, 22, -548], target: [-262, 0, -556] },
+  waterline: { pos: [-236, 0.02, -556], target: [-262, 0, -612] }, under: { pos: [-236, -2.6, -556], target: [-262, -2.2, -612] }, underUp: { pos: [-236, -4, -556], target: [-238, 1, -566] } } as const
+// 수중: 색(sRGB)과 밀도(1/m)
+const under = { color: '#0f7f86', density: 0.09 }
 
 const canvas = document.getElementById('c') as HTMLCanvasElement
 const engine = new Engine(canvas, true, { stencil: true, antialias: true, powerPreference: 'high-performance' })
@@ -24,7 +28,8 @@ engine.setHardwareScalingLevel(1 / dpr)
 const scene = new Scene(engine)
 const cam = new ArcRotateCamera('cam', 0, 1, 10, Vector3.Zero(), scene)
 cam.minZ = 0.3; cam.maxZ = 80000; cam.fov = 55 * Math.PI / 180; cam.lowerRadiusLimit = 1; cam.upperRadiusLimit = 3000
-cam.upperBetaLimit = Math.PI * 0.495; cam.wheelPrecision = 2; cam.panningSensibility = 50
+cam.upperBetaLimit = Math.PI * 0.9; cam.wheelPrecision = 2; cam.panningSensibility = 50
+cam.inertia = 0; cam.panningInertia = 0   // 감쇠 끔
 cam.attachControl(canvas, true)
 const goCam = (k: keyof typeof CAMS) => { cam.setTarget(new Vector3(...CAMS[k].target)); cam.setPosition(new Vector3(...CAMS[k].pos)) }
 goCam((qs.get('cam') as keyof typeof CAMS) ?? 'low')
@@ -35,8 +40,8 @@ const island = new Vector3(-260, -720, 150)
 
 Effect.ShadersStore['skyVertexShader'] = skyVS
 Effect.ShadersStore['skyFragmentShader'] = skyFS
-const skyUniforms = ['world', 'viewProjection', 'uTime', 'uSun', 'uSunColor', 'uSunI', 'uZenith', 'uHorizon', 'uClouds', 'uCam']
-const skyMat = new ShaderMaterial('sky', scene, 'sky', { attributes: ['position'], uniforms: skyUniforms })
+const skyUniforms = ['world', 'viewProjection', 'uTime', 'uSun', 'uSunColor', 'uSunI', 'uZenith', 'uHorizon', 'uClouds', 'uCam', 'uUnderG', 'uUWCol', 'uUWDens', 'uCamDepth', 'uSplit', 'uRes', 'uCamF', 'uNear']
+const skyMat = new ShaderMaterial('sky', scene, 'sky', { attributes: ['position'], uniforms: skyUniforms, samplers: ['uWL'] })
 skyMat.backFaceCulling = false; skyMat.disableDepthWrite = true
 const skyMesh = MeshBuilder.CreateSphere('sky', { diameter: 80000, segments: 32 }, scene)
 skyMesh.material = skyMat; skyMesh.infiniteDistance = true; skyMesh.renderingGroupId = 0
@@ -52,7 +57,8 @@ Effect.ShadersStore['islandVertexShader'] = `precision highp float; attribute ve
 uniform mat4 world; uniform mat4 viewProjection; varying vec3 vCol; varying vec3 vN; varying vec3 vWp;
 void main(){ vec4 w = world*vec4(position,1.0); vWp = w.xyz; vN = normalize(mat3(world)*normal); vCol = color.rgb; gl_Position = viewProjection*w; }`
 Effect.ShadersStore['islandFragmentShader'] = islandFS
-const islandMat = new ShaderMaterial('islm', scene, 'island', { attributes: ['position', 'normal', 'color'], uniforms: [...skyUniforms, 'uShoreA'] })
+const islandMat = new ShaderMaterial('islm', scene, 'island', { attributes: ['position', 'normal', 'color'], uniforms: [...skyUniforms, 'uShoreA', 'uShoreRect', 'uShoreLen', 'uDepth'], samplers: ['uShore', 'uWL'] })
+islandMat.setTexture('uShore', shoreTex); islandMat.setVector3('uShoreRect', new Vector3(...SHORE.rect))
 {
   const grid = MeshBuilder.CreateGround('isl', { width: 360, height: 360, subdivisions: 220, updatable: true }, scene)
   const q = grid.getVerticesData('position')!; const col: number[] = []
@@ -92,7 +98,7 @@ function buildOcean() {
   Effect.ShadersStore['oceanFragmentShader'] = oceanFS
   const mat = new ShaderMaterial(`ocean_${quality}`, scene, 'ocean', { attributes: ['position'],
     uniforms: [...skyUniforms, 'uTimeV', 'uCamV', 'uOffset', 'uG', 'uL', 'uRot', 'uOff01', 'uOff2', 'uIsland', 'uHs', 'uTexN', 'uDeep', 'uShallow', 'uTurb', 'uClarity', 'uDepth', 'uShoreRect', 'uShoreA', 'uShoreLen', 'uShoreFoam', 'uFoamCol', 'uSharp', 'uCollFoam'],
-    samplers: ['uShore', 'uDisp0', 'uDisp1', 'uDisp2', 'uDer0', 'uDer1', 'uDer2'] })
+    samplers: ['uWL', 'uShore', 'uDisp0', 'uDisp1', 'uDisp2', 'uDer0', 'uDer1', 'uDer2'] })
   mat.backFaceCulling = false
   mat.needAlphaBlending = () => true
   mat.setTexture('uShore', shoreTex); mat.setVector3('uShoreRect', new Vector3(...SHORE.rect))
@@ -100,20 +106,20 @@ function buildOcean() {
   mat.setVector4('uOff01', new Vector4(...CASCADE_OFF[0], ...CASCADE_OFF[1])); mat.setVector2('uOff2', new Vector2(...CASCADE_OFF[2]))
   mat.setFloat('uG', g); mat.setFloat('uTexN', q.N); mat.setVector3('uIsland', island)
   const sim = new FFTOcean(engine, scene, q.N, aniso)
-  m.material = mat; ocean = { m, g, mat, sim }; applySpectrum(); applySky(); applyLook(); applyShore()
+  m.material = mat; ocean = { m, g, mat, sim }; applySpectrum(); applySky(); applyLook(); applyShore(); applyUnder()
 }
 const look: WaterLook = { ...WATER_PRESETS['열대 맑은 물'] }
 function applyLook() {
   if (!ocean) return
   const mt = ocean.mat
   mt.setColor3('uDeep', Color3.FromHexString(look.deep).toLinearSpace()); mt.setColor3('uShallow', Color3.FromHexString(look.shallow).toLinearSpace())
-  mt.setFloat('uTurb', look.turbidity); mt.setFloat('uClarity', look.clarity); mt.setFloat('uDepth', look.depth)
+  mt.setFloat('uTurb', look.turbidity); mt.setFloat('uClarity', look.clarity); mt.setFloat('uDepth', look.depth); islandMat.setFloat('uDepth', look.depth)
 }
 const shore: ShoreLook = { ...SHORE_DEFAULT }
 function applyShore() {
   if (!ocean) return
   const mt = ocean.mat
-  mt.setFloat('uShoreA', shore.shoreWave); islandMat.setFloat('uShoreA', shore.shoreWave); mt.setFloat('uShoreLen', shore.shoreLen); mt.setFloat('uShoreFoam', shore.shoreFoam); mt.setFloat('uSharp', shore.sharp); mt.setFloat('uCollFoam', shore.collFoam); ocean.sim.setFoam(shore.collFoam, shore.persist)
+  mt.setFloat('uShoreA', shore.shoreWave); islandMat.setFloat('uShoreA', shore.shoreWave); mt.setFloat('uShoreLen', shore.shoreLen); islandMat.setFloat('uShoreLen', shore.shoreLen); mt.setFloat('uShoreFoam', shore.shoreFoam); mt.setFloat('uSharp', shore.sharp); mt.setFloat('uCollFoam', shore.collFoam); ocean.sim.setFoam(shore.collFoam, shore.persist)
   mt.setColor3('uFoamCol', Color3.FromHexString(shore.foamColor).toLinearSpace().scale(shore.foamBright))
 }
 let specTimer = 0
@@ -131,7 +137,22 @@ function applySky() {
   sunL.direction = new Vector3(-s.sun[0], -s.sun[1], -s.sun[2]); sunL.diffuse = new Color3(...s.sunColor); sunL.intensity = s.sunI * 0.6
   hemi.diffuse = new Color3(...s.zenith); hemi.groundColor = new Color3(0.05, 0.08, 0.1); hemi.intensity = 0.8
 }
+function applyUnder() {
+  const c = Color3.FromHexString(under.color).toLinearSpace()
+  for (const mm of [ocean?.mat, skyMat, islandMat]) { if (!mm) continue; mm.setColor3('uUWCol', c); mm.setFloat('uUWDens', under.density) }
+}
 buildOcean()
+
+// 카메라 위치의 실제 수면 높이: 1x1 float 패스 → 비동기 리드백
+const probeER = new EffectRenderer(engine)
+const probeW = new EffectWrapper({ engine, name: 'probe', fragmentShader: probeFS, useShaderStore: false,
+  uniformNames: ['uNearL', 'uNearR', 'uStripN', 'uOffset', 'uG', 'uCamV', 'uTimeV', 'uL', 'uRot', 'uOff01', 'uOff2', 'uIsland', 'uHs', 'uTexN', 'uSharp', 'uShoreRect', 'uShoreA', 'uShoreLen', 'uDepth'],
+  samplerNames: ['uShore', 'uDisp0', 'uDisp1', 'uDisp2', 'uDer0', 'uDer1', 'uDer2'] })
+const STRIP = 256   // 근평면 가로 스트립 해상도 (픽셀 단위 수면 분할용)
+const probeRT = engine.createRenderTargetTexture({ width: STRIP, height: 1 }, { type: Constants.TEXTURETYPE_FLOAT, samplingMode: Constants.TEXTURE_NEAREST_SAMPLINGMODE, generateMipMaps: false, generateDepthBuffer: false, generateStencilBuffer: false, format: Constants.TEXTUREFORMAT_RGBA })
+const probe = { k: 0, h: 0, under: false, blend: 0, busy: false, buf: new Float32Array(STRIP * 4) }
+const wlTex = new BaseTexture(scene); wlTex._texture = probeRT.texture; wlTex.wrapU = wlTex.wrapV = Constants.TEXTURE_CLAMP_ADDRESSMODE
+const nearL = new Vector3(), nearR = new Vector3()
 
 // 후처리: ACES 톤매핑 + 약한 블룸 + FXAA
 const pipe = new DefaultRenderingPipeline('pp', true, scene, [cam])
@@ -152,7 +173,40 @@ scene.onBeforeRenderObservable.add(() => {
     const cur = ocean.sim.update(time, dt), mt = ocean.mat
     if (cur >= 0) for (let i = 0; i < 3; i++) { mt.setTexture(`uDisp${i}`, ocean.sim.disp[i][cur].t); mt.setTexture(`uDer${i}`, ocean.sim.deriv[i].t) }
     mt.setVector2('uOffset', new Vector2(c.x, c.z)); mt.setFloat('uTime', time); mt.setFloat('uTimeV', time); mt.setVector3('uCam', c); mt.setVector3('uCamV', c)
+    // 수중 판정: 실제 파면 높이 기준 + 히스테리시스(±6cm)
+    if (cur >= 0 && probeW.effect.isReady()) {
+      const fw = cam.getDirection(Vector3.Forward()), rt = cam.getDirection(Vector3.Right())
+      const half = Math.tan(cam.fov / 2) * engine.getAspectRatio(cam) * cam.minZ * 1.02
+      fw.scaleToRef(cam.minZ, nearL); nearL.addInPlace(rt.scale(-half)); fw.scaleToRef(cam.minZ, nearR); nearR.addInPlace(rt.scale(half))
+      for (const mm of [mt, skyMat, islandMat]) { mm.setTexture('uWL', wlTex); mm.setVector2('uRes', new Vector2(engine.getRenderWidth(), engine.getRenderHeight())); mm.setVector3('uCamF', fw); mm.setFloat('uNear', cam.minZ) }
+      const sim = ocean.sim, g = ocean.g
+      probeW.onApplyObservable.clear(); probeW.onApplyObservable.add(() => { const e = probeW.effect
+        for (let i = 0; i < 3; i++) { e.setTexture(`uDisp${i}`, sim.disp[i][cur].t); e.setTexture(`uDer${i}`, sim.deriv[i].t) }
+        e.setTexture('uShore', shoreTex); e.setVector3('uShoreRect', new Vector3(...SHORE.rect))
+        e.setVector3('uL', new Vector3(...CASCADE_L)); e.setVector3('uRot', new Vector3(...CASCADE_ROT))
+        e.setVector4('uOff01', new Vector4(...CASCADE_OFF[0], ...CASCADE_OFF[1])); e.setVector2('uOff2', new Vector2(...CASCADE_OFF[2]))
+        e.setFloat('uG', g); e.setFloat('uTexN', Q[quality].N); e.setVector3('uIsland', island); e.setFloat('uHs', sim.hs)
+        e.setFloat('uSharp', shore.sharp); e.setFloat('uShoreA', shore.shoreWave); e.setFloat('uShoreLen', shore.shoreLen); e.setFloat('uDepth', look.depth)
+        e.setVector3('uNearL', nearL); e.setVector3('uNearR', nearR); e.setFloat('uStripN', STRIP)
+        e.setVector2('uOffset', new Vector2(c.x, c.z)); e.setVector3('uCamV', c); e.setFloat('uTimeV', time) })
+      probeER.render(probeW, probeRT)
+      // 리드백은 8프레임마다 (매 프레임 getBufferSubData가 GPU 대기로 ~30ms 스톨)
+      if (!probe.busy && (probe.k = (probe.k + 1) % 8) === 0) {
+        probe.busy = true
+        engine._readTexturePixels(probeRT.texture!, STRIP, 1, -1, 0, probe.buf, true)
+          .then(() => { const v = probe.buf[(STRIP / 2) * 4]; if (Number.isFinite(v)) probe.h = v }).catch(() => {}).finally(() => { probe.busy = false })
+      }
+    }
   }
+  const depth = probe.h - c.y
+  if (!probe.under && depth > 0.06) probe.under = true
+  else if (probe.under && depth < -0.06) probe.under = false
+  probe.blend += ((probe.under ? 1 : 0) - probe.blend) * Math.min(1, dt * 10)
+  const ub = probe.blend < 0.002 ? 0 : probe.blend > 0.998 ? 1 : probe.blend
+  // 수면 ±0.6m 이내면 픽셀 분할, 1.2m 밖에서는 기존 전체 블렌드
+  const sa = Math.min(1, Math.max(0, (Math.abs(depth) - 0.6) / 0.6)), split = 1 - sa * sa * (3 - 2 * sa)
+  for (const mm of [ocean?.mat, skyMat, islandMat]) { if (!mm) continue; mm.setFloat('uUnderG', ub); mm.setFloat('uSplit', split); mm.setFloat('uCamDepth', Math.max(depth, 0)) }
+  ;(window as any).__under = { h: probe.h, under: probe.under, blend: ub, split }
   islandMat.setFloat('uTime', time); islandMat.setVector3('uCam', c)
   skyMat.setFloat('uTime', time); skyMat.setVector3('uCam', c)
   acc += dt; n++; if (acc > 0.5) { const f = n / acc; (window as any).__fps = f; fpsEl.textContent = f.toFixed(0); acc = 0; n = 0 }
@@ -213,11 +267,16 @@ slider('거품 밝기 Foam brightness', 0.3, 2, 0.05, () => shore.foamBright, (v
 slider('파도 뾰족함 Crest sharpness', 0, 1, 0.05, () => shore.sharp, (v) => { shore.sharp = v; applyShore() })
 slider('물살 거품 양 Collision foam', 0, 2, 0.05, () => shore.collFoam, (v) => { shore.collFoam = v; applyShore() })
 slider('거품 지속 시간 Foam persistence', 0.3, 4, 0.1, () => shore.persist, (v) => { shore.persist = v; applyShore() }, 'x')
+{ const h = document.createElement('div'); h.className = 'border-t border-white/10 pt-2 text-[11px] font-semibold text-slate-200'; h.textContent = '수중 Underwater'; panel.appendChild(h) }
+{ const l = document.createElement('label'); l.className = 'flex items-center justify-between text-[11px] text-slate-300'
+  l.innerHTML = '수중 색 <input type="color" class="h-6 w-10 bg-transparent">'; const inp = l.querySelector('input')!
+  inp.value = under.color; inp.oninput = () => { under.color = inp.value; applyUnder() }; panel.appendChild(l) }
+slider('수중 밀도 Underwater density', 0.01, 0.4, 0.01, () => under.density, (v) => { under.density = v; applyUnder() }, ' /m')
 slider('픽셀 비율 Pixel ratio', 0.5, 2, 0.25, () => dpr, (v) => { dpr = v; engine.setHardwareScalingLevel(1 / v) })
 const row = (html: string) => { const d = document.createElement('div'); d.className = 'flex gap-1 text-xs'; d.innerHTML = html; panel.appendChild(d); return d }
 const qrow = row((['low', 'medium', 'high'] as Quality[]).map((k) => `<button data-q="${k}" class="flex-1 rounded px-2 py-1">${k}</button>`).join(''))
 const paintQ = () => qrow.querySelectorAll('button').forEach((b) => { b.className = `flex-1 rounded px-2 py-1 ${b.dataset.q === quality ? 'bg-sky-500' : 'bg-white/10 hover:bg-white/20'}` })
 qrow.querySelectorAll('button').forEach((b) => (b.onclick = () => { quality = b.dataset.q as Quality; paintQ(); buildOcean() })); paintQ()
-const crow = row(`<button data-c="low" class="flex-1 rounded bg-white/10 px-2 py-1 hover:bg-white/20">수면 시점</button><button data-c="high" class="flex-1 rounded bg-white/10 px-2 py-1 hover:bg-white/20">상공 시점</button>`)
+const crow = row(`<button data-c="low" class="flex-1 rounded bg-white/10 px-2 py-1 hover:bg-white/20">수면 시점</button><button data-c="high" class="flex-1 rounded bg-white/10 px-2 py-1 hover:bg-white/20">상공 시점</button><button data-c="under" class="flex-1 rounded bg-white/10 px-2 py-1 hover:bg-white/20">수중 시점</button>`)
 crow.querySelectorAll('button').forEach((b) => (b.onclick = () => goCam(b.dataset.c as keyof typeof CAMS)))
 ;(window as any).__cam = goCam
