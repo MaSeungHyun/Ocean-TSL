@@ -311,7 +311,7 @@ vec2 detailSlope(vec2 xz, float t){
 }
 void main(){
   uwInit(vW, uCam);
-  vec3 toCam = uCam - vW; float dist = length(toCam); vec3 V = toCam/dist;
+  vec3 toCam = uCam - vW; float dist = length(toCam); vec3 V = toCam/dist; float hd = length(toCam.xz);   // 디테일 컷오프는 수평 거리 기준
   float m = ampMod(vXZ);
   vec4 si = shoreInfo(vXZ); float wd0 = waterDepth(si.x);
   float att0 = 0.12 + 0.88*smoothstep(0.5, 18.0, wd0), att1 = smoothstep(0.4, 9.0, wd0);
@@ -322,10 +322,10 @@ void main(){
   vec4 d1 = derB(uDer1, uDisp1, uL.y, uRot.y, uOff01.zw, 1.3, f1);
   vec4 d2 = derB(uDer2, uDisp2, uL.z, uRot.z, uOff2, 4.7, f2);
   float w0 = mix(1.0, m, 0.6)*att0, w1 = m*att1, w2 = m*att1*(1.0-smoothstep(800.0, 4000.0, dist));
-  vec2 slope = d0.xy*w0 + d1.xy*w1 + d2.xy*w2 + (dist < uDetail ? detailSlope(vXZ, uTime) : vec2(0.0))*(0.35 + 0.65*att1)*(1.0-smoothstep(30.0, 250.0, dist));
+  vec2 slope = d0.xy*w0 + d1.xy*w1 + d2.xy*w2 + (hd < uDetail ? detailSlope(vXZ, uTime) : vec2(0.0))*(0.35 + 0.65*att1)*(1.0-smoothstep(30.0, 250.0, dist));
   // 얕은 물: 해안 방향으로 늘어난 비주기 노이즈 디테일 + 해안 파도 기울기
   vec2 sdir = dot(si.zw, si.zw) > 0.0 ? normalize(si.zw) : vec2(1.0, 0.0);
-  slope += (dist < uDetail ? shoreDetail(vXZ, sdir, uTime) : vec2(0.0))*(1.0 - att1)*(1.0-smoothstep(40.0, 300.0, dist));
+  slope += (hd < uDetail ? shoreDetail(vXZ, sdir, uTime) : vec2(0.0))*(1.0 - att1)*(1.0-smoothstep(40.0, 300.0, dist));
   slope += -sdir*sw.y;
   float pk = peakMod(vXZ);
   float jm = min(d0.z, d0.w)*w0 + min(d1.z, d1.w)*w1;
@@ -368,11 +368,11 @@ void main(){
   float depth = wd0;
   float path = (vW.y + depth)/max(-T.y, 0.04);
   vec3 bed = vW + T*path;
-  for (int it = 0; it < 2; it++){ if (dist > uDetail) break; depth = waterDepth(shoreInfo(bed.xz).x); path = max(vW.y + depth, 0.0)/max(-T.y, 0.04); bed = vW + T*path; }
-  float sand = 0.75 + 0.25*(dist < uDetail ? fbm(vec3(bed.xz*0.35, 3.0), 3) : 0.5);
+  for (int it = 0; it < 2; it++){ if (hd > uDetail) break; depth = waterDepth(shoreInfo(bed.xz).x); path = max(vW.y + depth, 0.0)/max(-T.y, 0.04); bed = vW + T*path; }
+  float sand = 0.75 + 0.25*(hd < uDetail ? fbm(vec3(bed.xz*0.35, 3.0), 3) : 0.5);
   vec3 bedAlb = vec3(0.78, 0.7, 0.52)*sand;
   float cfade = 1.0 - smoothstep(0.0, 1.0, length(fwidth(bed.xz))*0.6);   // 멀면 커스틱을 평균값으로
-  float ca = mix(0.12, (dist < uDetail ? caustics(bed.xz + T.xz*0.5, uTime) : 0.12), cfade)*(1.0 - uTurb*0.85)*(1.0 - uClouds*0.6);
+  float ca = mix(0.12, (hd < uDetail ? caustics(bed.xz + T.xz*0.5, uTime) : 0.12), cfade)*(1.0 - uTurb*0.85)*(1.0 - uClouds*0.6);
   vec3 sunDown = sunC*max(uSun.y, 0.0)*exp(-ext*depth);
   vec3 bedCol = bedAlb*(sunDown*(0.55 + ca*3.0) + amb*exp(-ext*depth)*0.6);
   vec3 trans = exp(-ext*path);
@@ -394,7 +394,7 @@ void main(){
   float band = smoothstep(-1.5, 0.5, d)*smoothstep(5.0, 0.5, d);
   float shoreMask = uShoreFoam*(band*0.75*step(0.0, d) + sw.z*0.9 + sw.w*0.55);
   float mask = clamp(foamA + shoreMask, 0.0, 1.0);
-  float pat = mix(dist < uDetail ? lace(vXZ, uTime) : 0.55, 0.55, smoothstep(80.0, 600.0, dist));
+  float pat = mix(hd < uDetail ? lace(vXZ, uTime) : 0.55, 0.55, smoothstep(80.0, 600.0, dist));
   float foam = foamCover(mask, pat)*(1.0-smoothstep(1500.0, 6000.0, dist));
   vec3 foamC = uFoamCol*(amb*1.6 + sunC*0.55*max(N.y, 0.0));
   col = mix(col, foamC, foam*0.95);
