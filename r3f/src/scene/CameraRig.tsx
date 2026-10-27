@@ -31,6 +31,18 @@ export function goCam(k: CamKey) {
   c.update();
 }
 
+type V3 = [number, number, number];
+const r3 = (v: { x: number; y: number; z: number }): V3 => [
+  +v.x.toFixed(3),
+  +v.y.toFixed(3),
+  +v.z.toFixed(3),
+];
+// 내보내기용 현재 카메라 (위치 + 회전 중심)
+export function getCamView(): { position: V3; target: V3 } | null {
+  const c = controls.current;
+  return c ? { position: r3(c.object.position), target: r3(c.target) } : null;
+}
+
 export function CameraRig() {
   countRender("scene.camera");
   const { probe } = useScene();

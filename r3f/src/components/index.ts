@@ -6,3 +6,6 @@ export { ToggleRow } from "./ToggleRow";
 export { ColorRow } from "./ColorRow";
 export { SelectRow } from "./SelectRow";
 export { Button } from "./Button";
+export { IconButton } from "./IconButton";
+export { useFlash } from "./useFlash";
+export { copyText } from "./clipboard";

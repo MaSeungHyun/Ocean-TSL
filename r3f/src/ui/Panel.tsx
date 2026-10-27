@@ -1,4 +1,5 @@
 import { countRender } from "../dev/renderCount";
+import { SettingsIO } from "./SettingsIO";
 import { WaveSection } from "./sections/WaveSection";
 import { SkySection } from "./sections/SkySection";
 import { LookSection } from "./sections/LookSection";
@@ -13,8 +14,9 @@ export function Panel() {
   countRender("panel");
   return (
     <div className="absolute right-3 top-3 w-72 max-h-[calc(100vh-24px)] overflow-y-auto rounded-sm bg-neutral-900/85 px-3 py-1 text-white">
-      <div className="py-2 text-sm font-semibold text-neutral-100">
-        바다 설정
+      <div className="flex items-center justify-between py-2 text-sm font-semibold text-neutral-100">
+        <span>바다 설정</span>
+        <SettingsIO />
       </div>
       <WaveSection />
       <SkySection />
