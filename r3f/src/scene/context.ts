@@ -1,11 +1,11 @@
 import { createContext, useContext, type MutableRefObject } from "react";
 import type * as THREE from "three";
-import type { FFTOcean } from "../fft";
+import type { OceanSim } from "../fft";
 import type { Cube, Probe, Seabed } from "./resources";
 
 // OceanScene이 만든 GPU 리소스 공유 (품질/FFT 해상도 변경 시에만 교체)
 export interface SceneCtx {
-  sim: FFTOcean;
+  sim: OceanSim;
   ocean: THREE.ShaderMaterial;
   sky: THREE.ShaderMaterial;
   island: THREE.ShaderMaterial;

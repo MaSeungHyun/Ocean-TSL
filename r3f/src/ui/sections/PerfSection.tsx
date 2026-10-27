@@ -6,7 +6,8 @@ import {
   SelectRow,
   ToggleRow,
 } from "../../components";
-import { useSettings, type Quality } from "../../state/settingsStore";
+import { hasWebGPU, useSettings, type Quality } from "../../state/settingsStore";
+import { perfBus } from "../../state/perfBus";
 import type { UpdateMode } from "../../fft";
 
 const QUALITY_OPTS = [
@@ -38,6 +39,19 @@ export function PerfSection() {
     useSettings.getState();
   return (
     <Accordion title="성능" info="sec.perf">
+      <ToggleRow
+        label="WebGPU (TSL)"
+        info="webgpu"
+        checked={perf.backend === "webgpu"}
+        onChange={(on) => {
+          if (on && !hasWebGPU()) {
+            perfBus.emit({ note: "이 브라우저는 WebGPU 미지원 → WebGL2 유지" });
+            return;
+          }
+          perfBus.emit({ note: "" });
+          setPerf("backend", on ? "webgpu" : "webgl");
+        }}
+      />
       <SelectRow<Quality>
         label="품질 프리셋"
         info="quality"

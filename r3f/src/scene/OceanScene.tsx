@@ -1,7 +1,16 @@
 import { useEffect, useMemo, useRef, type ReactNode } from "react";
 import { useThree } from "@react-three/fiber";
 import { useShallow } from "zustand/shallow";
-import { FFTOcean } from "../fft";
+import { FFTOcean, type OceanSim } from "../fft";
+import { FFTOceanGPU } from "../webgpu/fftGPU";
+import {
+  makeIslandMatGPU,
+  makeOceanMatGPU,
+  makeProbeGPU,
+  makeSeabedGPU,
+  makeSkyMatGPU,
+} from "../webgpu/oceanTSL";
+import type * as THREE from "three";
 import { Q, useSettings } from "../state/settingsStore";
 import { countRender } from "../dev/renderCount";
 import { SceneContext, type SceneCtx } from "./context";
@@ -27,18 +36,35 @@ export function OceanScene({ children }: { children?: ReactNode }) {
   const rings = useSettings((s) => Q[s.quality].rings);
   const n = useSettings(useShallow((s) => s.perf.n));
   const grid = useMemo(() => radialGrid(rings), [rings]);
-  const sim = useMemo(
-    () => new FFTOcean(n, Math.min(16, gl.capabilities.getMaxAnisotropy())),
+  // WebGPURenderer면 TSL 노드 머티리얼 + 컴퓨트 FFT, 아니면 기존 GLSL 경로
+  const gpu = (gl as unknown as { isWebGPURenderer?: boolean }).isWebGPURenderer === true;
+  const sim = useMemo<OceanSim>(
+    () =>
+      gpu
+        ? new FFTOceanGPU(n, Math.min(16, (gl as unknown as { getMaxAnisotropy(): number }).getMaxAnisotropy()))
+        : new FFTOcean(n, Math.min(16, gl.capabilities.getMaxAnisotropy())),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [n[0], n[1], n[2], gl],
   );
   useEffect(() => () => sim.dispose(), [sim]);
-  const ocean = useMemo(() => makeOceanMat(grid.g), [grid.g]);
-  const sky = useMemo(makeSkyMat, []);
-  const island = useMemo(makeIslandMat, []);
-  const probe = useMemo(() => makeProbe(ocean), [ocean]);
+  const ocean = useMemo(
+    () => (gpu ? (makeOceanMatGPU(grid.g) as unknown as THREE.ShaderMaterial) : makeOceanMat(grid.g)),
+    [grid.g, gpu],
+  );
+  const sky = useMemo(() => (gpu ? (makeSkyMatGPU() as unknown as THREE.ShaderMaterial) : makeSkyMat()), [gpu]);
+  const island = useMemo(
+    () => (gpu ? (makeIslandMatGPU() as unknown as THREE.ShaderMaterial) : makeIslandMat()),
+    [gpu],
+  );
+  const probe = useMemo(
+    () => (gpu ? (makeProbeGPU(ocean) as unknown as ReturnType<typeof makeProbe>) : makeProbe(ocean)),
+    [ocean, gpu],
+  );
   useEffect(() => () => probe.m.dispose(), [probe]);
-  const seabed = useMemo(() => makeSeabed(ocean), [ocean]);
+  const seabed = useMemo(
+    () => (gpu ? (makeSeabedGPU(ocean) as unknown as ReturnType<typeof makeSeabed>) : makeSeabed(ocean)),
+    [ocean, gpu],
+  );
   useEffect(
     () => () => {
       seabed.g.dispose();

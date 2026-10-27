@@ -51,8 +51,14 @@ export function useHeightProbe() {
       const n = 1 + cs.length * PER_CUBE,
         buf = new Float32Array(n * 4),
         snap = cs.slice();
-      gl.readRenderTargetPixelsAsync(probeRT, 0, 1, n, 1, buf)
-        .then(() => {
+      // WebGPU 시그니처: (rt, x, y, w, h, textureIndex) → 버퍼 인자를 넘기면 textures[buf]가 undefined
+      const isGPU = (gl as unknown as { isWebGPURenderer?: boolean }).isWebGPURenderer;
+      (isGPU
+        ? (gl as unknown as { readRenderTargetPixelsAsync(rt: THREE.RenderTarget, x: number, y: number, w: number, h: number): Promise<ArrayLike<number>> }).readRenderTargetPixelsAsync(probeRT, 0, 1, n, 1)
+        : gl.readRenderTargetPixelsAsync(probeRT, 0, 1, n, 1, buf))
+        .then((res: ArrayLike<number> | void) => {
+          // WebGPU는 새 배열을 반환 (버퍼를 채우지 않음)
+          if (res && res !== buf) buf.set(Array.prototype.slice.call(res, 0, buf.length));
           if (Number.isFinite(buf[0])) probe.h = buf[0];
           snap.forEach((c, i) => {
             const b = (1 + i * PER_CUBE) * 4;

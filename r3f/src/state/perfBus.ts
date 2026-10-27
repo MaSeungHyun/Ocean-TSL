@@ -1,6 +1,6 @@
 // 프레임 통계 → PerfReadout (React 상태 없이 DOM 직접 갱신)
-type Stat = { fps: string; dpr: string };
-const stat: Stat = { fps: "--", dpr: "" };
+export type Stat = { fps: string; dpr: string; backend: string; note: string };
+const stat: Stat = { fps: "--", dpr: "", backend: "", note: "" };
 const subs = new Set<(s: Stat) => void>();
 export const perfBus = {
   get: () => stat,

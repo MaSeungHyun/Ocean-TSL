@@ -22,7 +22,17 @@ const outRT = (N: number, aniso: number) => {
 }
 
 export type UpdateMode = 'every' | 'alt' | 'nth'
-export class FFTOcean {
+// WebGL(FFTOcean) / WebGPU(FFTOceanGPU) 공통 인터페이스
+export interface OceanSim {
+  N: number[]; hs: number
+  disp: { texture: THREE.Texture }[][]; deriv: { texture: THREE.Texture }[]
+  setFoam(collFoam: number, persist: number): void
+  setParams(p: OceanParams): void
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  update(r: any, time: number, dt: number, mode?: UpdateMode, nth?: number): number[]
+  dispose(): void
+}
+export class FFTOcean implements OceanSim {
   N: number[]; hs = 1
   setFoam(collFoam: number, persist: number) { const u = this.dsp.m.uniforms; u.uFoamThr.value = 0.45 + 0.25 * collFoam; u.uFoamDecay.value = 0.55 / Math.max(persist, 0.1) }
   private cam = new THREE.Camera()

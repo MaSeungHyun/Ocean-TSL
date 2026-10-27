@@ -1,6 +1,8 @@
 import { Canvas } from "@react-three/fiber";
 import * as THREE from "three";
+import { WebGPURenderer } from "three/webgpu";
 import { curDpr, useSettings } from "./state/settingsStore";
+import { perfBus } from "./state/perfBus";
 import { countRender } from "./dev/renderCount";
 import { OceanScene } from "./scene/OceanScene";
 import { CameraRig, cam0 } from "./scene/CameraRig";
@@ -17,18 +19,34 @@ const camera0 = {
   far: 80000,
 };
 const gl0 = { antialias: true, powerPreference: "high-performance" } as const;
+// WebGPU: 비동기 init, 어댑터를 못 얻으면 three가 WebGL2 백엔드로 폴백 (TSL은 그대로 동작)
+const glGPU = async (props: { canvas: HTMLCanvasElement | OffscreenCanvas }) => {
+  const r = new WebGPURenderer({ canvas: props.canvas as HTMLCanvasElement, ...gl0 });
+  await r.init();
+  return r;
+};
 
 export default function App() {
   countRender("app");
+  // 백엔드만 구독 → 전환 시 Canvas를 key로 재생성
+  const backend = useSettings((s) => s.perf.backend);
   return (
     <div className="fixed inset-0">
       <Canvas
+        key={backend}
         dpr={dpr0}
-        gl={gl0}
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        gl={(backend === "webgpu" ? glGPU : gl0) as any}
         camera={camera0}
         onCreated={({ gl }) => {
           gl.toneMapping = THREE.ACESFilmicToneMapping;
           gl.toneMappingExposure = 1.0;
+          const b = (gl as unknown as { backend?: { isWebGPUBackend?: boolean } }).backend;
+          const isGPU = (gl as unknown as { isWebGPURenderer?: boolean }).isWebGPURenderer;
+          perfBus.emit({
+            backend: !isGPU ? "WebGL2 · GLSL · GPU FFT" : b?.isWebGPUBackend ? "WebGPU · TSL · 컴퓨트 FFT" : "WebGL2 폴백 · TSL",
+            note: isGPU && !b?.isWebGPUBackend ? "WebGPU 어댑터 없음 → WebGL2 백엔드로 실행 중" : perfBus.get().note,
+          });
         }}
       >
         <OceanScene>
