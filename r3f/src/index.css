@@ -1,2 +1,7 @@
 @import "tailwindcss";
-input[type=range]{accent-color:#38bdf8}
+input[type=range]{accent-color:#3b82f6;-webkit-appearance:none;appearance:none;height:14px;background:transparent}
+input[type=range]::-webkit-slider-runnable-track{height:4px;border-radius:2px;background:linear-gradient(#3b82f6,#3b82f6) 0/var(--p,50%) 100% no-repeat,#3f3f46}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:12px;height:12px;margin-top:-4px;border-radius:50%;background:#3b82f6;border:2px solid #dbeafe}
+input[type=range]::-moz-range-track{height:4px;border-radius:2px;background:#3f3f46}
+input[type=range]::-moz-range-progress{height:4px;border-radius:2px;background:#3b82f6}
+input[type=range]::-moz-range-thumb{width:10px;height:10px;border-radius:50%;background:#3b82f6;border:2px solid #dbeafe}
