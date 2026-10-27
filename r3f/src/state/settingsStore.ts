@@ -29,7 +29,11 @@ export type Perf = {
   target: number;
   probeCube: number;
   probeIdle: number;
+  backend: Backend;
 };
+export type Backend = "webgl" | "webgpu";
+// WebGPU 지원 여부 (동기 판별: navigator.gpu 존재)
+export const hasWebGPU = () => typeof navigator !== "undefined" && "gpu" in navigator;
 export const PERF_Q: Record<Quality, [number, number, number]> = {
   low: [256, 128, 128],
   medium: [256, 256, 256],
@@ -47,6 +51,8 @@ export const perfDefault = (q: Quality = "high"): Perf => ({
   target: 50,
   probeCube: 3,
   probeIdle: 8,
+  // 기본 WebGPU (미지원 브라우저는 WebGL2)
+  backend: hasWebGPU() ? "webgpu" : "webgl",
 });
 const isQ = (v: unknown): v is Quality =>
   v === "low" || v === "medium" || v === "high";
@@ -95,6 +101,13 @@ function loadPerf(qs: URLSearchParams): { quality: Quality; perf: Perf } {
       target: num(sp.target, 30, 120, d.target, 5),
       probeCube: num(sp.probeCube, 1, 12, d.probeCube, 1),
       probeIdle: num(sp.probeIdle, 1, 30, d.probeIdle, 1),
+      backend:
+        (qs.get("gpu") === "1" ||
+          (qs.get("gpu") !== "0" &&
+            (sp.backend === "webgl" || sp.backend === "webgpu" ? sp.backend : d.backend) === "webgpu")) &&
+        hasWebGPU()
+          ? "webgpu"
+          : "webgl",
     },
   };
 }
